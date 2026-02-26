@@ -54,9 +54,20 @@ fn get_basic_info(host: &str) -> Result<BasicInfo, ApiError> {
     call_api(host, "/api/wizard/getBasicInfo")
 }
 
-fn enable_telnet(ip: &str, md5: &str) -> Result<serde_json::Value, ApiError> {
-    let path = format!("/api/debug?status=enable{}", md5);
-    call_api(ip, &path)
+fn enable_telnet(
+    host: &str,
+    info: &BasicInfo,
+    password: &str,
+) -> Result<serde_json::Value, ApiError> {
+    let md5_input = format!(
+        "sn={}--ethaddr={}--usrpwd={}\n--H3C.MAGIC.ZH",
+        info.sn.to_lowercase(),
+        info.mac.to_lowercase(),
+        password,
+    );
+    let md5_bytes = md5::compute(md5_input.as_bytes());
+    let md5_hex = format!("{:x}", md5_bytes);
+    call_api(host, &format!("/api/debug?status=enable{}", md5_hex))
 }
 
 fn get_gateways() -> Vec<String> {
@@ -65,7 +76,7 @@ fn get_gateways() -> Vec<String> {
     // Try to detect gateway from default routes
     if let Ok(routes) = netroute::list_routes() {
         for route in routes {
-            if route.family != Ipv4 || route.destination.prefix_length > 0 {
+            if route.family != Ipv4 || route.destination.prefix_len > 0 {
                 continue;
             }
             let Some(gw) = route.gateway else {
@@ -79,8 +90,8 @@ fn get_gateways() -> Vec<String> {
     }
 
     for fallback in ["192.168.124.1", "moshujia.cn"] {
-        if !hosts.contains(&fallback.to_string()) {
-            hosts.push(fallback.to_string());
+        if !hosts.iter().any(|s| s == fallback) {
+            hosts.push(fallback.to_owned());
         }
     }
 
@@ -92,7 +103,7 @@ fn main() {
 
     // Find gateways
     let hosts: Vec<String> = if args.len() > 1 {
-        vec![args[1].clone()]
+        args[1..].to_vec()
     } else {
         get_gateways()
     };
@@ -101,26 +112,20 @@ fn main() {
     let mut found: Option<(String, BasicInfo)> = None;
     for host in &hosts {
         match get_basic_info(host) {
-            Ok(data) => {
-                found = Some((host.clone(), data));
+            Ok(info) => {
+                found = Some((host.clone(), info));
                 break;
             }
             Err(e) => eprintln!("{:?}", e),
         }
     }
-    let (host, info) = found.expect("no gateway responded");
 
     // Read password from stdin
-    let md5_input = format!(
-        "sn={}--ethaddr={}--usrpwd={}\n--H3C.MAGIC.ZH",
-        info.sn.to_lowercase(),
-        info.mac.to_lowercase(),
-        &prompt("Password: "),
-    );
-
-    let md5_bytes = md5::compute(md5_input.as_bytes());
-    let md5_hex = format!("{:x}", md5_bytes);
-    enable_telnet(&host, &md5_hex);
+    if let Some((host, info)) = found {
+        enable_telnet(&host, &info, &prompt("Password: ")).ok();
+    } else {
+        eprintln!("\n{:?}", ApiError::Network("No gateway responded".into()));
+    }
 
     prompt("\nPress ENTER to exit...");
 }
@@ -130,5 +135,5 @@ fn prompt(msg: &str) -> String {
     io::Write::flush(&mut io::stdout()).ok();
     let mut buf = String::new();
     io::stdin().read_line(&mut buf).ok();
-    buf.trim_end().to_string()
+    buf.trim_end().to_owned()
 }
