@@ -1,0 +1,107 @@
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  release:
+    name: Publish to GitHub Releases
+    permissions:
+      contents: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - target: x86_64-apple-darwin
+          os: macos-latest
+        - target: x86_64-pc-windows-msvc
+          os: windows-latest
+        - target: x86_64-unknown-linux-musl
+          os: ubuntu-latest
+        - target: x86_64-unknown-freebsd
+          os: ubuntu-latest
+          cross: true
+        - target: i686-pc-windows-msvc
+          os: windows-latest
+        - target: i686-unknown-linux-musl
+          os: ubuntu-latest
+        - target: aarch64-unknown-linux-musl
+          os: ubuntu-latest
+          cross: true
+        - target: aarch64-apple-darwin
+          os: macos-latest
+        - target: aarch64-pc-windows-msvc
+          os: windows-latest
+        - target: armv7-unknown-linux-musleabihf
+          os: ubuntu-latest
+          cross: true
+        - target: arm-unknown-linux-musleabihf
+          os: ubuntu-latest
+          cross: true
+
+    runs-on: ${{matrix.os}}
+    env:
+      BUILD_CMD: cargo
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Install cross
+      if: matrix.cross
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cross
+
+    - name: Enable cross
+      if: matrix.cross
+      shell: bash
+      run: echo "BUILD_CMD=cross" >> $GITHUB_ENV
+
+    - name: Print version info
+      shell: bash
+      run: |
+        cargo -V
+        rustc -V
+        rustup -V
+        rustup toolchain list
+        rustup default
+        gcc --version || true
+
+    - name: Build
+      shell: bash
+      run: $BUILD_CMD build --locked --release --target=${{ matrix.target }}
+
+    - name: Package archives
+      shell: bash
+      id: package
+      env:
+        target: ${{ matrix.target }}
+      run: |
+        set -euxo pipefail
+
+        bin=${GITHUB_REPOSITORY##*/}
+        version=${GITHUB_REF##*/}
+        name=$bin-$version-$target
+
+        cd target/$target/release
+        if [[ "$RUNNER_OS" == Windows ]]; then
+            7z a $name.zip $bin.exe
+            echo "archive=target/$target/release/$name.zip" >> $GITHUB_OUTPUT
+        else
+            tar -czvf $name.tar.gz $bin
+            echo "archive=target/$target/release/$name.tar.gz" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Publish archives
+      uses: softprops/action-gh-release@v2
+      if: ${{ startsWith(github.ref, 'refs/tags/') }}
+      with:
+        files: ${{ steps.package.outputs.archive }}
+        draft: false
+        prerelease: false
