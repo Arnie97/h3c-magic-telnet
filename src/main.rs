@@ -2,7 +2,7 @@ use netroute::RouteFamily::Ipv4;
 use serde::Deserialize;
 use std::io;
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize)]
 struct BasicInfo {
     brand: String,
     model: String,
@@ -10,7 +10,7 @@ struct BasicInfo {
     mac: String,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize)]
 struct Resp<T> {
     code: i32,
     message: String,
@@ -33,7 +33,7 @@ enum ApiError {
 
 fn call_api<T, E>(ip: &str, path: &str) -> Result<T, E>
 where
-    T: for<'de> Deserialize<'de> + Clone,
+    T: for<'de> Deserialize<'de>,
     E: From<ApiError>,
 {
     let url = format!("http://{}{}", ip, path);
@@ -53,19 +53,27 @@ where
         .as_str()
         .map_err(|e| ApiError::Parse(e.to_string()))?;
     eprintln!("{}", contents);
-    let resp = match serde_json::from_str::<Vec<RespItem<T>>>(contents) {
-        Ok(resp_vec) => resp_vec
-            .get(0)
-            .ok_or(ApiError::Parse("Empty JSON array".to_owned()))?
-            .result
-            .clone(),
+
+    // Check whether resp was an JSON array
+    let resp: Resp<T> = match serde_json::from_str::<Vec<RespItem<T>>>(contents)
+    {
+        Ok(mut resp_vec) => {
+            if resp_vec.is_empty() {
+                return Err(
+                    ApiError::Parse("Empty JSON array".to_owned()).into()
+                );
+            }
+            resp_vec.swap_remove(0).result
+        }
+
+        // Check whether resp was an JSON object
         Err(_) => serde_json::from_str::<Resp<T>>(contents)
             .map_err(|e| ApiError::Parse(e.to_string()))?,
     };
-    if resp.code != 0 {
-        return Err(ApiError::Status(resp.code, resp.message).into());
+    match resp.code {
+        0 => Ok(resp.data),
+        e => Err(ApiError::Status(e, resp.message).into()),
     }
-    Ok(resp.data)
 }
 
 fn get_basic_info(host: &str) -> Result<BasicInfo, ApiError> {
@@ -97,10 +105,10 @@ fn list_possible_gateways() -> Vec<String> {
             if route.family != Ipv4 || route.destination.prefix_len > 0 {
                 continue;
             }
-            let Some(gw) = route.gateway else {
+            let Some(ip_addr) = route.gateway else {
                 continue;
             };
-            let gateway = gw.to_string();
+            let gateway = ip_addr.to_string();
             if !hosts.contains(&gateway) {
                 hosts.push(gateway);
             }
@@ -117,10 +125,10 @@ fn list_possible_gateways() -> Vec<String> {
 }
 
 fn get_available_gateway(hosts: Vec<String>) -> Option<(String, BasicInfo)> {
-    for host in &hosts {
-        match get_basic_info(host) {
+    for host in hosts {
+        match get_basic_info(&host) {
             Ok(info) => {
-                return Some((host.clone(), info));
+                return Some((host, info));
             }
             Err(e) => eprintln!("{:?}", e),
         }
@@ -160,5 +168,5 @@ fn prompt(msg: &str) -> String {
     io::Write::flush(&mut io::stdout()).ok();
     let mut buf = String::new();
     io::stdin().read_line(&mut buf).ok();
-    buf.trim_end().to_owned()
+    buf.trim().to_owned()
 }
